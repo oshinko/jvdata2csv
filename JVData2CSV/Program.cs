@@ -1,5 +1,7 @@
 ﻿using System;
+using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using System.Reflection;
 using System.Text;
 
@@ -68,7 +70,12 @@ namespace JVLink_Testing
             var prgDownload = new ProgressBar();
             var prgJVRead = new ProgressBar();
 
-            JVLink.JVOpen("RACE", fromtime, 4, ref nReadCount, ref nDownloadCount, out strLastFileTimestamp);
+            var r = JVLink.JVOpen("RACE", fromtime, 4, ref nReadCount, ref nDownloadCount, out strLastFileTimestamp);
+
+            if (r != 0)
+            {
+                Environment.Exit(r);
+            }
 
             if (nDownloadCount == 0)
             {
@@ -228,6 +235,8 @@ namespace JVLink_Testing
                     "kyakusitukubun"
                 }));
 
+                var wips = new List<string>();
+
                 do
                 {
                     switch (JVLink.JVRead(out strBuff, out nBuffSize, out strFileName))
@@ -263,6 +272,18 @@ namespace JVLink_Testing
                             {
                                 case "RA":
                                     raceInfo.SetDataB(ref strBuff);
+                                    switch (raceInfo.head.DataKubun)
+                                    {
+                                        case "1":
+                                        case "2":
+                                        case "3":
+                                        case "4":
+                                        case "5":
+                                        case "6":
+                                            // 速報系は JVRTOpen に渡す
+                                            wips.Add(raceInfo.id.Year + raceInfo.id.MonthDay);
+                                            break;
+                                    }
                                     Write(raceInfo, raceStream);
                                     break;
                                 case "SE":
@@ -280,11 +301,97 @@ namespace JVLink_Testing
                     }
                 }
                 while (!flg_exit);
+
+                JVLink.JVClose();
+
+                foreach (var wip in wips.Distinct().OrderBy(x => x))
+                {
+                    r = JVLink.JVRTOpen("0B15", wip);
+
+                    if (r != 0)
+                    {
+                        Environment.Exit(r);
+                    }
+
+                    strBuff = new string('\0', nBuffSize);      // JVRead: データ格納バッファ
+                    strFileName = new string('\0', nNameSize);  // JVRead: 読み込み中ファイル名
+
+                    while (true)
+                    {
+                        r = JVLink.JVRead(out strBuff, out nBuffSize, out strFileName);
+
+                        if (r == 0)
+                        {
+                            Console.WriteLine("全ファイル読み込み終了");
+                            Console.WriteLine();
+                            break;
+                        }
+                        else if (r == -1)
+                        {
+                            Console.WriteLine("ファイル切り替わり");
+                            Console.WriteLine();
+                        }
+                        else if (r == -3)
+                        {
+                            Console.WriteLine("ダウンロード中: " + JVLink.JVStatus());
+                            Console.WriteLine();
+                        }
+                        else if (r == -201)
+                        {
+                            Console.WriteLine("JVInit が行われていません。");
+                            Console.WriteLine();
+                            break;
+                        }
+                        else if (r == -203)
+                        {
+                            Console.WriteLine("JVOpen が行われていません。");
+                            Console.WriteLine();
+                            break;
+                        }
+                        else if (r == -503)
+                        {
+                            Console.WriteLine(strFileName + "が存在しません。");
+                            Console.WriteLine();
+                            break;
+                        }
+                        else if (r > 0)
+                        {
+                            var recordSpec = strBuff.Substring(0, 2);
+
+                            if (recordSpec == "RA")
+                            {
+                                raceInfo.SetDataB(ref strBuff);
+                                Write(raceInfo, raceStream);
+                                switch (raceInfo.head.DataKubun)
+                                {
+                                    case "1":
+                                    case "2":
+                                    case "3":
+                                    case "4":
+                                    case "5":
+                                    case "6":
+                                        // 速報系は JVRTOpen に渡す
+                                        wips.Add(raceInfo.id.Year + raceInfo.id.MonthDay);
+                                        break;
+                                }
+                            }
+                            else if (recordSpec == "SE")
+                            {
+                                raceUmaInfo.SetDataB(ref strBuff);
+                                Write(raceUmaInfo, raceHorseStream);
+                            }
+                            else
+                            {
+                                Console.WriteLine("読み飛ばし: " + strBuff.Substring(0, 2));
+                                Console.WriteLine();
+                                JVLink.JVSkip();
+                            }
+                        }
+                    }
+
+                    JVLink.JVClose();
+                }
             }
-
-            Console.WriteLine("exit");
-
-            JVLink.JVClose();
         }
 
         static void Write(JV_RA_RACE info, StreamWriter s)
